@@ -18,7 +18,7 @@ const SLIPGUARD_API = "https://slipguard-backend.onrender.com/api/v1/verify-slip
 
 let currentQR = null;
 let botStatus = "Disconnected";
-let activeApiKey = process.env.API_KEY || "";
+let activeApiKey = process.env.API_KEY || "your-default-secure-api-key";
 let sock = null;
 
 // Settings සුරැකීමට
@@ -33,15 +33,13 @@ async function startWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState("auth_session");
 
     sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: "silent" }),
-    printQRInTerminal: false,
-    getMessage: async (key) => {
-        return {
-            conversation: ""
-        };
-    }
-});
+        auth: state,
+        logger: pino({ level: "silent" }),
+        printQRInTerminal: false,
+        getMessage: async (key) => {
+            return { conversation: "" };
+        }
+    });
 
     sock.ev.on("creds.update", saveCreds);
 
@@ -51,17 +49,27 @@ async function startWhatsApp() {
         if (qr) {
             currentQR = await QRCode.toDataURL(qr);
             botStatus = "QR Ready - Scan Now";
+            console.log("[Bot] New QR Code generated.");
         }
 
         if (connection === "close") {
             currentQR = null;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            botStatus = shouldReconnect ? "Reconnecting..." : "Logged Out";
-            if (shouldReconnect) startWhatsApp();
+            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+            console.log(`[Bot] Connection closed. Reason code: ${statusCode}`);
+            
+            if (isLoggedOut) {
+                botStatus = "Logged Out";
+                try { fs.rmSync("auth_session", { recursive: true, force: true }); } catch (e) {}
+                setTimeout(() => startWhatsApp(), 1500);
+            } else {
+                botStatus = "Reconnecting...";
+                setTimeout(() => startWhatsApp(), 3000);
+            }
         } else if (connection === "open") {
             currentQR = null;
             botStatus = "Connected & Active 24/7";
+            console.log("✅ [Bot] WhatsApp connected successfully!");
         }
     });
 
@@ -71,9 +79,17 @@ async function startWhatsApp() {
         if (!msg.message || msg.key.fromMe) return;
 
         const sender = msg.key.remoteJid;
-        const isImage = msg.message.imageMessage;
+        console.log(`[Message] Received message from: ${sender}`);
+
+        // Image message extraction (normal or wrapped)
+        const messageContent = msg.message;
+        const isImage = messageContent.imageMessage || 
+                        messageContent.viewOnceMessage?.message?.imageMessage ||
+                        messageContent.viewOnceMessageV2?.message?.imageMessage;
 
         if (isImage) {
+            console.log("[SlipGuard] Image detected! Starting verification process...");
+            
             if (!activeApiKey) {
                 console.log("[Warn] Slip received but no API Key configured.");
                 return;
@@ -84,6 +100,7 @@ async function startWhatsApp() {
                     text: "⏳ ඔබගේ බැංකු රිසිට්පත පරීක්ෂා කෙරෙමින් පවතී. කරුණාකර රැඳී සිටින්න..." 
                 }, { quoted: msg });
 
+                console.log("[SlipGuard] Downloading image media...");
                 const buffer = await downloadMediaMessage(msg, "buffer", {});
 
                 const formData = new FormData();
@@ -94,6 +111,7 @@ async function startWhatsApp() {
                     contentType: "image/jpeg"
                 });
 
+                console.log(`[SlipGuard] Sending to API: ${SLIPGUARD_API}`);
                 const res = await axios.post(SLIPGUARD_API, formData, {
                     headers: {
                         ...formData.getHeaders(),
@@ -103,6 +121,7 @@ async function startWhatsApp() {
                 });
 
                 const result = res.data;
+                console.log("[SlipGuard API Response]:", JSON.stringify(result));
 
                 if (result.verdict === "CLEAN / LOW RISK" && result.risk_score <= 45) {
                     const text = `✅ *ගෙවීම් රිසිට්පත තහවුරු විය!*\n\n` +
@@ -118,10 +137,14 @@ async function startWhatsApp() {
                     await sock.sendMessage(sender, { text }, { quoted: msg });
                 }
             } catch (err) {
-                console.error("API error:", err.response?.data || err.message);
+                console.error("[API Error Details]:", err.response?.data || err.message);
                 if (err.response?.status === 402) {
                     await sock.sendMessage(sender, { 
                         text: "⚠️ Verification පද්ධතියේ Credits අවසන්ව ඇත. කරුණාකර Administrator අමතන්න." 
+                    }, { quoted: msg });
+                } else {
+                    await sock.sendMessage(sender, { 
+                        text: "⚠️ රිසිට්පත පරීක්ෂා කිරීමේදී සේවාදායකයේ දෝෂයක් ඇති විය. මද වේලාවකින් නැවත උත්සාහ කරන්න." 
                     }, { quoted: msg });
                 }
             }
