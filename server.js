@@ -33,10 +33,15 @@ async function startWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState("auth_session");
 
     sock = makeWASocket({
-        auth: state,
-        logger: pino({ level: "silent" }),
-        printQRInTerminal: false
-    });
+    auth: state,
+    logger: pino({ level: "silent" }),
+    printQRInTerminal: false,
+    getMessage: async (key) => {
+        return {
+            conversation: ""
+        };
+    }
+});
 
     sock.ev.on("creds.update", saveCreds);
 
