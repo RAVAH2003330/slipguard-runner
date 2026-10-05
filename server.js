@@ -21,6 +21,9 @@ let botStatus = "Disconnected";
 let activeApiKey = process.env.API_KEY || "your-default-secure-api-key";
 let sock = null;
 
+// Bad MAC error එක වළක්වන retry counter cache එක
+const msgRetryCounterCache = new Map();
+
 // Settings සුරැකීමට
 if (fs.existsSync("config.json")) {
     try {
@@ -36,6 +39,8 @@ async function startWhatsApp() {
         auth: state,
         logger: pino({ level: "silent" }),
         printQRInTerminal: false,
+        syncFullHistory: false, // පරණ chats sync කර Bad MAC වීම වළක්වයි
+        msgRetryCounterCache,   // Messages decrypt නොවී drop වීම වළක්වයි
         getMessage: async (key) => {
             return { conversation: "" };
         }
@@ -81,14 +86,14 @@ async function startWhatsApp() {
         const sender = msg.key.remoteJid;
         console.log(`[Message] Received message from: ${sender}`);
 
-        // Image message extraction (normal or wrapped)
+        // සාමාන්‍ය හෝ View-Once images නිවැරදිව ලබාගැනීම
         const messageContent = msg.message;
         const isImage = messageContent.imageMessage || 
                         messageContent.viewOnceMessage?.message?.imageMessage ||
                         messageContent.viewOnceMessageV2?.message?.imageMessage;
 
         if (isImage) {
-            console.log("[SlipGuard] Image detected! Starting verification process...");
+            console.log("[SlipGuard] Bank Slip Image detected! Processing...");
             
             if (!activeApiKey) {
                 console.log("[Warn] Slip received but no API Key configured.");
@@ -100,7 +105,7 @@ async function startWhatsApp() {
                     text: "⏳ ඔබගේ බැංකු රිසිට්පත පරීක්ෂා කෙරෙමින් පවතී. කරුණාකර රැඳී සිටින්න..." 
                 }, { quoted: msg });
 
-                console.log("[SlipGuard] Downloading image media...");
+                console.log("[SlipGuard] Downloading slip media...");
                 const buffer = await downloadMediaMessage(msg, "buffer", {});
 
                 const formData = new FormData();
@@ -111,7 +116,7 @@ async function startWhatsApp() {
                     contentType: "image/jpeg"
                 });
 
-                console.log(`[SlipGuard] Sending to API: ${SLIPGUARD_API}`);
+                console.log(`[SlipGuard] Submitting to API: ${SLIPGUARD_API}`);
                 const res = await axios.post(SLIPGUARD_API, formData, {
                     headers: {
                         ...formData.getHeaders(),
@@ -144,7 +149,7 @@ async function startWhatsApp() {
                     }, { quoted: msg });
                 } else {
                     await sock.sendMessage(sender, { 
-                        text: "⚠️ රිසිට්පත පරීක්ෂා කිරීමේදී සේවාදායකයේ දෝෂයක් ඇති විය. මද වේලාවකින් නැවත උත්සාහ කරන්න." 
+                        text: "⚠️ රිසිට්පත පරීක්ෂා කිරීමේදී තාක්ෂණික දෝෂයක් ඇති විය. මද වේලාවකින් නැවත උත්සාහ කරන්න." 
                     }, { quoted: msg });
                 }
             }
